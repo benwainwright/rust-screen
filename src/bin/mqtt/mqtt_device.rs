@@ -49,11 +49,11 @@ impl<'a, TcpConnection: TcpConnect> MqttDevice<'a, TcpConnection> {
                 sw_version: &self.sw_version,
             },
         };
-        let config_json = serde_json::to_string(&discovery_config)?;
+        for entity in self.entities.iter() {}
 
-        self.mqtt_client
-            .publish(&discovery_topic, &config_json)
-            .await;
+        let config_json = serde_json::to_value(&discovery_config)?;
+
+        config_json.as_object().unwrap().extend_one(item);
 
         Ok(())
     }

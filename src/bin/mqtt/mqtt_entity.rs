@@ -1,3 +1,5 @@
+use core::str::FromStr;
+
 use alloc::{format, string::String};
 use embedded_nal_async::TcpConnect;
 use serde::{Serialize, Serializer};
@@ -33,6 +35,9 @@ where
     discovery_prefix: String,
     default_state: String,
 
+    #[serde(skip_serializing)]
+    state: String,
+
     #[serde(flatten)]
     default_config: MqttEntityDefaultConfig,
 
@@ -60,6 +65,7 @@ where
         Self {
             discovery_prefix: init.discovery_prefix,
             default_state: init.default_state,
+            state: String::from_str("").unwrap(),
             additional_properties: init.additional_properties,
             default_config: MqttEntityDefaultConfig {
                 device_class: init.device_class,
@@ -71,5 +77,16 @@ where
             },
             mqtt_client: init.mqtt_client,
         }
+    }
+
+    pub async fn poll(&self) {
+        if let Some(message) = self
+            .mqtt_client
+            .wait_for_message_on_topic(&self.default_config.command_topic)
+            .await
+        {
+            self.state = message.message;
+        }
+        Ok(())
     }
 }

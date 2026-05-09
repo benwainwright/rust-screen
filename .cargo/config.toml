@@ -4,7 +4,12 @@ runner = "espflash flash --monitor --chip esp32"
 [build]
 rustflags = ["-C", "link-arg=-nostartfiles"]
 
-target = "xtensa-esp32-none-elf"
+target = "xtensa-esp32-espidf"
 
 [unstable]
 build-std = ["alloc", "core"]
+
+[env]
+MCU = "esp32"
+ESP_IDF_VERSION = "v5.5.3"
+ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
