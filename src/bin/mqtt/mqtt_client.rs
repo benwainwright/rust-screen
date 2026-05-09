@@ -1,19 +1,29 @@
 use core::{
     net::{Ipv4Addr, SocketAddr},
+    num::NonZero,
+    pin::Pin,
     str::FromStr,
 };
 
 use esp_println::println;
 
-use alloc::{borrow::ToOwned, boxed::Box, collections::btree_map::BTreeMap, string::String};
+struct SubscriptionMessage {
+    pub topic: String,
+    pub message: String,
+}
+
+use alloc::{
+    borrow::ToOwned, boxed::Box, collections::btree_map::BTreeMap, string::String, vec::Vec,
+};
 use embedded_nal_async::TcpConnect;
 use rust_mqtt::{
-    Bytes,
     buffer::AllocBuffer,
     client::{
         Client,
         event::{Event, Publish, Suback},
-        options::{ConnectOptions, RetainHandling, SubscriptionOptions},
+        options::{
+            ConnectOptions, PublicationOptions, RetainHandling, SubscriptionOptions, TopicReference,
+        },
     },
     config::SessionExpiryInterval,
     types::{MqttBinary, MqttString, TopicFilter, TopicName, VarByteInt},
@@ -33,7 +43,6 @@ pub struct MqttClient<'a, TConnection: TcpConnect> {
     port: u16,
     password: String,
     host: String,
-    callbacks: BTreeMap<String, Box<dyn FnMut(Bytes) + 'a>>,
 }
 
 impl<'a, TConnection: TcpConnect> MqttClient<'a, TConnection> {
@@ -52,7 +61,39 @@ impl<'a, TConnection: TcpConnect> MqttClient<'a, TConnection> {
             password: password.to_owned(),
             host: host.to_owned(),
             mqtt_client: Client::new(buffer),
-            callbacks: BTreeMap::new(),
+        }
+    }
+
+    pub async fn publish(&mut self, topic: &str, message: &str) -> Option<NonZero<u16>> {
+        let topic_name = TopicName::new(MqttString::from_str(topic).unwrap()).unwrap();
+        let pub_options = PublicationOptions::new(TopicReference::Name(topic_name));
+
+        let identifier = match self.mqtt_client.publish(&pub_options, message.into()).await {
+            Ok(the_identifier) => {
+                println!(
+                    "Published message with packet identifier {}",
+                    the_identifier.unwrap()
+                );
+                the_identifier
+            }
+            Err(e) => {
+                println!("Failed to send Publish {e:?}");
+                return None;
+            }
+        };
+
+        loop {
+            match self.mqtt_client.poll().await {
+                Ok(Event::PublishComplete(_)) => {
+                    println!("Publish complete");
+                    return Some(identifier.unwrap().get());
+                }
+                Ok(e) => println!("Received event {e:?}"),
+                Err(e) => {
+                    println!("Failed to poll: {e:?}");
+                    return None;
+                }
+            }
         }
     }
 
@@ -94,17 +135,29 @@ impl<'a, TConnection: TcpConnect> MqttClient<'a, TConnection> {
         }
     }
 
-    pub async fn run_loop(&mut self) {
+    pub async fn wait_for_message_on_topic(
+        &mut self,
+        subscribed_topic: &str,
+    ) -> Option<SubscriptionMessage> {
         loop {
             match self.mqtt_client.poll().await {
-                Ok(Event::Publish(Publish { topic, message, .. })) => {
-                    for (key, callback) in self.callbacks.iter_mut() {
-                        let mqtt_string = MqttString::from_str(key).unwrap();
-                        let filter_string = mqtt_string.as_borrowed();
-                        let filter = TopicFilter::new(filter_string).unwrap();
+                Ok(Event::Publish(Publish {
+                    topic: event_topic,
+                    message,
+                    payload_format_indicator,
+                    ..
+                })) => {
+                    let mqtt_string = MqttString::from_str(subscribed_topic).unwrap();
+                    let filter_string = mqtt_string.as_borrowed();
+                    let filter = TopicFilter::new(filter_string).unwrap();
 
-                        if topic_matches_filter(&topic, &filter) {
-                            callback(message.clone())
+                    if let Some(value) = payload_format_indicator {
+                        if topic_matches_filter(&event_topic, &filter) && value {
+                            let message_str = str::from_utf8(message.as_bytes()).unwrap();
+                            return Some(SubscriptionMessage {
+                                topic: String::from_str(event_topic.as_ref().as_str()).unwrap(),
+                                message: String::from_str(message_str).unwrap(),
+                            });
                         }
                     }
                 }
@@ -116,11 +169,8 @@ impl<'a, TConnection: TcpConnect> MqttClient<'a, TConnection> {
         }
     }
 
-    pub async fn subscribe<F>(&mut self, topic: &str, callback: F)
-    where
-        F: FnMut(Bytes) + 'a,
-    {
-        let topic_string = MqttString::from_str(topic).unwrap();
+    pub async fn subscribe(&mut self, subscribed_topic: &str) {
+        let topic_string = MqttString::from_str(subscribed_topic).unwrap();
         let topic_filter = TopicFilter::new(topic_string.as_borrowed()).unwrap();
 
         let mut sub_options = SubscriptionOptions::new()
@@ -144,7 +194,6 @@ impl<'a, TConnection: TcpConnect> MqttClient<'a, TConnection> {
             Ok(_) => println!("Sent Subscribe"),
             Err(e) => {
                 println!("Failed to subscribe: {e:?}");
-                return;
             }
         }
 
@@ -157,15 +206,10 @@ impl<'a, TConnection: TcpConnect> MqttClient<'a, TConnection> {
             }
             Ok(e) => {
                 println!("Expected Suback but received event {e:?}");
-                return;
             }
             Err(e) => {
                 println!("Failed to receive Suback {e:?}");
-                return;
             }
         }
-
-        self.callbacks
-            .insert(String::from_str(topic).unwrap(), Box::new(callback));
     }
 }

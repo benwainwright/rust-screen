@@ -18,6 +18,10 @@ use esp_println::println;
 use esp_radio::wifi::{
     Config, ControllerConfig, Interface, WifiController, scan::ScanConfig, sta::StationConfig,
 };
+use rust_mqtt::{
+    client::options::PublicationOptions,
+    types::{MqttString, TopicName},
+};
 
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
